@@ -21,7 +21,7 @@ ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
 
 
 class YTDLSource(disnake.PCMVolumeTransformer):
-    def __init__(self, source, *, data, channel, volume=0.5):
+    def __init__(self, source, *, data, channel, volume=0.2):
         super().__init__(source, volume)
 
         self.data = data
@@ -47,12 +47,12 @@ class YTDLSource(disnake.PCMVolumeTransformer):
             data = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch:{query}", download=not stream))
 
         assert data
+        if data is None or not data:
+            return False
 
         if "entries" in data:
             # take first item from a playlist
             data = data["entries"][0]
-        else:
-            return False
 
         filename = data["url"] if stream else ytdl.prepare_filename(data)
         assert filename
@@ -60,10 +60,10 @@ class YTDLSource(disnake.PCMVolumeTransformer):
         return cls(disnake.FFmpegPCMAudio(filename, **ffmpeg_options), data=data, channel=channel)
 
 
-class Player(commands.Cog):
-    """Plays audio in a voice channel."""
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
+class Player:
+    def __init__(self, guild, loop):
+        self.guild = guild
+        self.loop = loop
         self.vc = None
         self.song_queue = []
         self.idle_counter = 0
@@ -83,11 +83,6 @@ class Player(commands.Cog):
             self.vc = None
             print("Bot idle - disconnecting")
 
-    @dc_timer.before_loop
-    async def before_dc_timer(self):
-        await self.bot.wait_until_ready()
-
-    @commands.slash_command()
     async def skip(
             self,
             inter: disnake.ApplicationCommandInteraction,
@@ -100,12 +95,15 @@ class Player(commands.Cog):
             inter.guild.voice_client.stop()
             await inter.response.send_message(":track_next:")
 
-    @commands.slash_command()
     async def queue(
             self,
             inter: disnake.ApplicationCommandInteraction
     ):
         """Shows the current queue"""
+        if len(self.song_queue) == 0:
+            await inter.response.send_message("Queue is empty!")
+            return
+
         embed = disnake.Embed(
             title=f"Song Queue",
             color=disnake.Color.blue(),
@@ -118,7 +116,6 @@ class Player(commands.Cog):
 
         await inter.response.send_message(embed=embed)
 
-    @commands.slash_command()
     async def leave(
             self,
             inter: disnake.ApplicationCommandInteraction
@@ -132,7 +129,6 @@ class Player(commands.Cog):
         self.vc = None
         await inter.response.send_message(":wave:")
 
-    @commands.slash_command()
     async def play(
             self,
             inter: disnake.ApplicationCommandInteraction,
@@ -146,7 +142,7 @@ class Player(commands.Cog):
             return
 
         channel = inter.channel
-        source = await YTDLSource.from_url(song, channel, loop=self.bot.loop, stream=False)
+        source = await YTDLSource.from_url(song, channel, loop=self.loop, stream=False)
 
         if not source:
             await inter.edit_original_message("Couldn't find song.")
@@ -163,6 +159,7 @@ class Player(commands.Cog):
             embed.set_footer(text=source.duration)
 
             await inter.edit_original_message(embed=embed)
+            print(f"{datetime.datetime.now()}: Queued {source.title} in {inter.guild_id}")
             return
 
         embed = disnake.Embed(
@@ -175,10 +172,7 @@ class Player(commands.Cog):
 
         await inter.edit_original_message(embed=embed)
 
-        activity = disnake.Game(name=source.title)
-        await self.bot.change_presence(activity=activity)
-
-        print(f"{datetime.datetime.now()}: PLaying {source.title}")
+        print(f"{datetime.datetime.now()}: Playing {source.title} in {self.guild.id}")
         self.vc.play(source, after=self.check_queue)
 
     def check_queue(self, error=None):
@@ -197,27 +191,81 @@ class Player(commands.Cog):
             embed.set_footer(text=source.duration)
 
             coro = source.channel.send(embed=embed)
-            asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
+            asyncio.run_coroutine_threadsafe(coro, self.loop)
 
-            activity = disnake.Game(name=source.title)
-            coro = self.bot.change_presence(activity=activity)
-            asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
-
-            print(f"{datetime.datetime.now()}: PLaying {source.title}")
+            print(f"{datetime.datetime.now()}: Playing {source.title} in {self.guild.id}")
             self.vc.play(source, after=self.check_queue)
-        else:
-            coro = self.bot.change_presence(activity=None)
-            asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
 
     async def ensure_voice(self, inter):
-        if inter.guild.voice_client is None:
-            if inter.author.voice:
+        if inter.author.voice:
+            if inter.guild.voice_client is None:
                 self.vc = await inter.author.voice.channel.connect()
             else:
-                await inter.edit_original_message("You are not connected to a voice channel.")
-                raise commands.CommandError("Author not connected to a voice channel.")
+                await inter.guild.voice_client.move_to(inter.author.voice.channel)
+        else:
+            await inter.edit_original_message("You are not connected to a voice channel.")
+            return False
         return True
 
 
-def setup(bot: commands.Bot):
-    bot.add_cog(Player(bot))
+class PlayerCommands(commands.Cog):
+    """Plays audio in a voice channel."""
+    def __init__(self, bot: commands.InteractionBot):
+        self.bot = bot
+        self.players = {}
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        print("Guilds:")
+        for guild in self.bot.guilds:
+            self.players.update({guild.id: Player(guild, loop=self.bot.loop)})
+            print(guild.id)
+
+    @commands.Cog.listener()
+    async def on_guild_join(
+            self,
+            guild
+    ):
+        self.players.update({guild.id: Player(guild, loop=self.bot.loop)})
+        print(f"{datetime.datetime.now()}: Joined guild {guild.id}")
+
+    @commands.slash_command()
+    async def skip(
+            self,
+            inter: disnake.ApplicationCommandInteraction
+    ):
+        """Skips current song"""
+        player = self.players.get(inter.guild.id)
+        await player.skip(inter)
+
+    @commands.slash_command()
+    async def queue(
+            self,
+            inter: disnake.ApplicationCommandInteraction
+    ):
+        """Shows the current queue"""
+        player = self.players.get(inter.guild.id)
+        await player.queue(inter)
+
+    @commands.slash_command()
+    async def leave(
+            self,
+            inter: disnake.ApplicationCommandInteraction
+    ):
+        """Disconnects the bot from voice"""
+        player = self.players.get(inter.guild.id)
+        await player.leave(inter)
+
+    @commands.slash_command()
+    async def play(
+            self,
+            inter: disnake.ApplicationCommandInteraction,
+            song: str
+    ):
+        """Play a song/video from YouTube"""
+        player = self.players.get(inter.guild.id)
+        await player.play(inter, song)
+
+
+def setup(bot: commands.InteractionBot):
+    bot.add_cog(PlayerCommands(bot))
