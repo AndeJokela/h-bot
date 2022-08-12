@@ -39,10 +39,10 @@ class YTDLSource(disnake.PCMVolumeTransformer):
 
         if "youtube.com" in query or "youtu.be" in query:
             data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=not stream))
-        elif "soundcloud" in query:
-            return False
+        elif "soundcloud.com" in query:
             # TODO: Add souncloud support
-            # data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=not stream))
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=not stream))
+            print(data)
         else:
             data = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch:{query}", download=not stream))
 
@@ -81,7 +81,7 @@ class Player:
             self.song_queue.clear()
             await self.vc.disconnect(force=False)
             self.vc = None
-            print("Bot idle - disconnecting")
+            print(f"{datetime.datetime.now()}: Bot idle - disconnecting from {self.guild.id}")
 
     async def skip(
             self,
@@ -93,7 +93,8 @@ class Player:
             return
         if inter.guild.voice_client.is_playing():
             inter.guild.voice_client.stop()
-            await inter.response.send_message(":track_next:")
+            await inter.response.send_message("skipping")
+            await inter.delete_original_message(delay=10)
 
     async def queue(
             self,
@@ -104,16 +105,17 @@ class Player:
             await inter.response.send_message("Queue is empty!")
             return
 
+        description_str = ""
+        i = 1
+        for song in self.song_queue:
+            description_str += f"{i}. [{song.title}]({song.webpage_url})\n"
+            i += 1
+
         embed = disnake.Embed(
             title=f"Song Queue",
             color=disnake.Color.blue(),
+            description=description_str
         )
-
-        i = 1
-        for song in self.song_queue:
-            embed.add_field(name=i, value=f"[{song.title}]({song.webpage_url})", inline=False)
-            i += 1
-
         await inter.response.send_message(embed=embed)
 
     async def leave(
@@ -134,7 +136,7 @@ class Player:
             inter: disnake.ApplicationCommandInteraction,
             song: str
     ):
-        """Play a song/video from YouTube"""
+        """Play a song/video from YouTube or Soundcloud"""
         await inter.response.defer()
         self.idle_counter = 0
 
@@ -153,10 +155,9 @@ class Player:
             embed = disnake.Embed(
                 title=f"Queued  -  {len(self.song_queue)}",
                 color=disnake.Color.blue(),
-                description=f"[{source.title}]({source.webpage_url})"
+                description=f"[{source.title}]({source.webpage_url})\n\n{source.duration}"
             )
             embed.set_thumbnail(url=source.thumbnail)
-            embed.set_footer(text=source.duration)
 
             await inter.edit_original_message(embed=embed)
             print(f"{datetime.datetime.now()}: Queued {source.title} in {inter.guild_id}")
@@ -165,10 +166,9 @@ class Player:
         embed = disnake.Embed(
             title="Playing",
             color=disnake.Color.green(),
-            description=f"[{source.title}]({source.webpage_url})"
+            description=f"[{source.title}]({source.webpage_url})\n\n{source.duration}"
         )
         embed.set_thumbnail(url=source.thumbnail)
-        embed.set_footer(text=source.duration)
 
         await inter.edit_original_message(embed=embed)
 
@@ -185,10 +185,9 @@ class Player:
             embed = disnake.Embed(
                 title="Playing",
                 color=disnake.Color.green(),
-                description=f"[{source.title}]({source.webpage_url})"
+                description=f"[{source.title}]({source.webpage_url})\n\n{source.duration}"
             )
             embed.set_thumbnail(url=source.thumbnail)
-            embed.set_footer(text=source.duration)
 
             coro = source.channel.send(embed=embed)
             asyncio.run_coroutine_threadsafe(coro, self.loop)

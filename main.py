@@ -46,5 +46,5 @@ async def status(inter: disnake.ApplicationCommandInteraction):
 
 bot_token = input("Enter bot token: ")
 
-bot.load_extension("cogs.player2")
+bot.load_extension("cogs.player")
 bot.run(bot_token)
