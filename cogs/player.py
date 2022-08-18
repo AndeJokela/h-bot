@@ -6,15 +6,22 @@ from disnake.ext import commands
 from disnake.ext import tasks
 
 ytdl_format_options = {
-    "format": "bestaudio/best",
-    "noplaylist": True,
-    "nocheckcertificate": True,
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36",
-    "referer": "https://www.youtube.com/"
+    'format': 'bestaudio/best',
+    'format-sort': '+size,+br,+res,+fps',
+    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
+    'restrictfilenames': True,
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'logtostderr': False,
+    'quiet': True,
+    'default_search': 'ytsearch',
+    'force-ipv4': True,
 }
 
 ffmpeg_options = {
-    'options': '-vn'
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_delay_max 5',
+    'options': '-loglevel 8 -vn'
 }
 
 ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
@@ -34,17 +41,13 @@ class YTDLSource(disnake.PCMVolumeTransformer):
         self.duration = data.get("duration_string")
 
     @classmethod
-    async def from_url(cls, query, channel, *, loop=None, stream=False):
+    async def get_source(cls, query, channel, *, loop=None, stream=False):
         loop = loop or asyncio.get_event_loop()
 
-        if "youtube.com" in query or "youtu.be" in query:
+        try:
             data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=not stream))
-        elif "soundcloud.com" in query:
-            # TODO: Add souncloud support
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=not stream))
-            print(data)
-        else:
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch:{query}", download=not stream))
+        except Exception:
+            return False
 
         assert data
         if data is None or not data:
@@ -136,7 +139,7 @@ class Player:
             inter: disnake.ApplicationCommandInteraction,
             song: str
     ):
-        """Play a song/video from YouTube or Soundcloud"""
+        """Play a song or video from URL or search from youtube"""
         await inter.response.defer()
         self.idle_counter = 0
 
@@ -144,7 +147,8 @@ class Player:
             return
 
         channel = inter.channel
-        source = await YTDLSource.from_url(song, channel, loop=self.loop, stream=False)
+
+        source = await YTDLSource.get_source(song, channel, loop=self.loop, stream=True)
 
         if not source:
             await inter.edit_original_message("Couldn't find song.")
@@ -198,7 +202,11 @@ class Player:
     async def ensure_voice(self, inter):
         if inter.author.voice:
             if inter.guild.voice_client is None:
-                self.vc = await inter.author.voice.channel.connect()
+                try:
+                    self.vc = await inter.author.voice.channel.connect(timeout=10, reconnect=True)
+                except TimeoutError:
+                    await inter.edit_original_message("Couldn't connect to voice, try again.")
+                    return False
             else:
                 await inter.guild.voice_client.move_to(inter.author.voice.channel)
         else:
@@ -261,7 +269,7 @@ class PlayerCommands(commands.Cog):
             inter: disnake.ApplicationCommandInteraction,
             song: str
     ):
-        """Play a song/video from YouTube"""
+        """Play a song or video from URL or search from youtube"""
         player = self.players.get(inter.guild.id)
         await player.play(inter, song)
 
