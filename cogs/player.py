@@ -20,7 +20,7 @@ ytdl_format_options = {
 }
 
 ffmpeg_options = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_delay_max 5',
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-loglevel 8 -vn'
 }
 
@@ -98,6 +98,9 @@ class Player:
             inter.guild.voice_client.stop()
             await inter.response.send_message("skipping")
             await inter.delete_original_message(delay=10)
+        else:
+            await inter.response.send_message("Not playing anything")
+            await inter.delete_original_message(delay=10)
 
     async def queue(
             self,
@@ -161,7 +164,8 @@ class Player:
                 color=disnake.Color.blue(),
                 description=f"[{source.title}]({source.webpage_url})\n\n{source.duration}"
             )
-            embed.set_thumbnail(url=source.thumbnail)
+            if source.thumbnail is not None:
+                embed.set_thumbnail(url=source.thumbnail)
 
             await inter.edit_original_message(embed=embed)
             print(f"{datetime.datetime.now()}: Queued {source.title} in {inter.guild_id}")
@@ -172,7 +176,8 @@ class Player:
             color=disnake.Color.green(),
             description=f"[{source.title}]({source.webpage_url})\n\n{source.duration}"
         )
-        embed.set_thumbnail(url=source.thumbnail)
+        if source.thumbnail is not None:
+            embed.set_thumbnail(url=source.thumbnail)
 
         await inter.edit_original_message(embed=embed)
 
@@ -191,7 +196,8 @@ class Player:
                 color=disnake.Color.green(),
                 description=f"[{source.title}]({source.webpage_url})\n\n{source.duration}"
             )
-            embed.set_thumbnail(url=source.thumbnail)
+            if source.thumbnail is not None:
+                embed.set_thumbnail(url=source.thumbnail)
 
             coro = source.channel.send(embed=embed)
             asyncio.run_coroutine_threadsafe(coro, self.loop)
