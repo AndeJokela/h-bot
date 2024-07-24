@@ -219,6 +219,17 @@ class Player:
             await inter.edit_original_message("You are not connected to a voice channel.")
             return False
         return True
+    
+    async def volume(self, inter, volume: int):
+        if inter.guild.voice_client is None:
+            await inter.response.send_message("The bot is not connected to voice.")
+            return
+        inter.guild.voice_client.source.volume = volume / 100
+        await inter.response.send_message(f"Volume set to {volume}%")
+
+    
+    def __del__(self):
+        self.dc_timer.stop()
 
 
 class PlayerCommands(commands.Cog):
@@ -278,6 +289,19 @@ class PlayerCommands(commands.Cog):
         """Play a song or video from URL or search from youtube"""
         player = self.players.get(inter.guild.id)
         await player.play(inter, song)
+
+    @commands.slash_command()
+    async def volume(
+            self,
+            inter: disnake.ApplicationCommandInteraction,
+            volume: int
+    ):
+        """Set volume between 0-100 (100 IS LOUD!)"""
+        if volume < 0 or volume > 100:
+            await inter.response.send_message("Volume must be between 0 and 100")
+            return
+        player = self.players.get(inter.guild.id)
+        await player.volume(inter, volume)
 
 
 def setup(bot: commands.InteractionBot):

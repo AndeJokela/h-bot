@@ -2,10 +2,8 @@ import datetime
 import disnake
 from disnake.ext import commands
 
-
-bot = commands.InteractionBot(
-    sync_commands_debug=True
-)
+bot_flags = commands.CommandSyncFlags.all()
+bot = commands.InteractionBot(command_sync_flags=bot_flags)
 
 start_time = datetime.datetime.now()
 
@@ -40,7 +38,6 @@ async def status(inter: disnake.ApplicationCommandInteraction):
     embed.add_field(name="Latency", value=f"{round(bot.latency * 1000)} ms", inline=True)
     embed.add_field(name="Uptime", value=str(uptime)[:-7], inline=True)
     embed.add_field(name="Songs Played", value=str(songs_played), inline=True)
-    # embed.set_image(url="https://upload.wikimedia.org/wikipedia/commons/e/ee/Hervanta1.jpg")
 
     await inter.response.send_message(embed=embed)
 
