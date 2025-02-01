@@ -58,7 +58,7 @@ class YTDLSource(disnake.PCMVolumeTransformer):
             logging.error(f"Error extracting info: {e}")
             return None
 
-        if data is None:
+        if not data:
             logging.error("No data found for the query.")
             return None
 
@@ -76,25 +76,23 @@ class YTDLSource(disnake.PCMVolumeTransformer):
             source = disnake.FFmpegPCMAudio(filename, **ffmpeg_options)
 
         return cls(source, data=data)
-    
-
-
-
 
 class Player:
-    def __init__(self, guild, loop):
+    def __init__(self, guild, loop, on_remove):
         self.guild = guild
         self.loop = loop
         self.voice_client = None
         self.queue = []
         self.idle_counter = 0
+        self.last_channel = None
+        self.on_remove = on_remove
         self.dc_timer.start()
 
     @tasks.loop(seconds=10)
     async def dc_timer(self):
         if self.voice_client and not self.voice_client.is_playing():
             self.idle_counter += 10
-            if self.idle_counter >= 600:  # Disconnect after 10 minutes of inactivity
+            if self.idle_counter >= 600:
                 await self.disconnect()
         else:
             self.idle_counter = 0
@@ -104,14 +102,18 @@ class Player:
             await self.voice_client.disconnect()
             self.voice_client = None
             self.queue.clear()
-            logging.info(f"Disconnected from {self.guild.name} due to inactivity.")
+            logging.info(f"Disconnected from {self.guild.name}.")
+        self.dc_timer.stop()
+        if self.on_remove:
+            self.on_remove()
 
     async def play_song(self, inter, query):
         await inter.response.defer()
+        self.last_channel = inter.channel
+
         if not await self.ensure_voice(inter):
             return
 
-        # Fetch song metadata in the background
         source = await YTDLSource.create_source(query, loop=self.loop, stream=True)
         if not source:
             await inter.edit_original_message(content="Could not find the requested song.")
@@ -128,7 +130,7 @@ class Player:
                 embed.set_thumbnail(url=source.thumbnail)
             await inter.edit_original_message(embed=embed)
         else:
-            self.voice_client.play(source, after=lambda _: self.loop.call_soon_threadsafe(self.play_next))
+            self.voice_client.play(source, after=lambda e: self.loop.call_soon_threadsafe(lambda: self.play_next(e)))
             embed = disnake.Embed(
                 title="Now Playing",
                 color=disnake.Color.green(),
@@ -138,41 +140,59 @@ class Player:
                 embed.set_thumbnail(url=source.thumbnail)
             await inter.edit_original_message(embed=embed)
 
-    def play_next(self):
+    def play_next(self, error=None):
+        if error:
+            logging.error(f"Playback error: {error}")
+            if self.last_channel:
+                coro = self.last_channel.send(f"An error occurred: {error}")
+                asyncio.run_coroutine_threadsafe(coro, self.loop)
+        
         if self.queue:
             source = self.queue.pop(0)
-            self.voice_client.play(source, after=lambda _: self.loop.call_soon_threadsafe(self.play_next))
-            coro = self.guild.text_channels[0].send(embed=disnake.Embed(
-                title="Now Playing",
-                color=disnake.Color.green(),
-                description=f"[{source.title}]({source.webpage_url})\n\nDuration: {source.duration}"
-            ).set_thumbnail(url=source.thumbnail if source.thumbnail else None))
-            asyncio.run_coroutine_threadsafe(coro, self.loop)
+            self.voice_client.play(source, after=lambda e: self.loop.call_soon_threadsafe(lambda: self.play_next(e)))
+            if self.last_channel:
+                embed = disnake.Embed(
+                    title="Now Playing",
+                    color=disnake.Color.green(),
+                    description=f"[{source.title}]({source.webpage_url})\n\nDuration: {source.duration}"
+                )
+                if source.thumbnail:
+                    embed.set_thumbnail(url=source.thumbnail)
+                coro = self.last_channel.send(embed=embed)
+                asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     async def ensure_voice(self, inter):
-        if inter.author.voice:
-            if not self.voice_client:
-                try:
-                    self.voice_client = await inter.author.voice.channel.connect()
-                except asyncio.TimeoutError:
-                    await inter.edit_original_message(content="Failed to connect to the voice channel.")
-                    return False
-            elif self.voice_client.channel != inter.author.voice.channel:
-                await self.voice_client.move_to(inter.author.voice.channel)
-        else:
-            await inter.edit_original_message(content="You must be in a voice channel to use this command.")
+        try:
+            if inter.author.voice:
+                if not self.voice_client:
+                    try:
+                        self.voice_client = await inter.author.voice.channel.connect(timeout=30)
+                    except (asyncio.TimeoutError, disnake.Forbidden) as e:
+                        await inter.edit_original_message(content=f"Failed to connect: {e}")
+                        return False
+                elif self.voice_client.channel != inter.author.voice.channel:
+                    await self.voice_client.move_to(inter.author.voice.channel)
+                return True
+            else:
+                await inter.edit_original_message(content="You must be in a voice channel to use this command.")
+                return False
+        except Exception as e:
+            logging.error(f"Voice connection error: {e}")
+            await inter.edit_original_message(content=f"Voice connection error: {e}")
             return False
-        return True
 
     async def show_queue(self, inter):
         if not self.queue:
             await inter.response.send_message("The queue is currently empty.")
             return
 
-        description = "".join([
-            f"{idx + 1}. [{song.title}]({song.webpage_url})\n"
-            for idx, song in enumerate(self.queue)
-        ])
+        description = []
+        for idx, song in enumerate(self.queue, 1):
+            description.append(f"{idx}. [{song.title}]({song.webpage_url})\n")
+        
+        description = "".join(description)
+        if len(description) > 4096:
+            description = description[:4093] + "..."
 
         embed = disnake.Embed(
             title="Queue",
@@ -180,9 +200,6 @@ class Player:
             description=description
         )
         await inter.response.send_message(embed=embed)
-
-
-
 
 class MusicCog(commands.Cog):
     def __init__(self, bot):
@@ -196,7 +213,16 @@ class MusicCog(commands.Cog):
     @commands.slash_command()
     async def play(self, inter, song: str):
         """Play a song from YouTube."""
-        player = self.players.setdefault(inter.guild.id, Player(inter.guild, self.bot.loop))
+        guild_id = inter.guild.id
+        
+        if guild_id not in self.players:
+            def remove_player():
+                if guild_id in self.players:
+                    del self.players[guild_id]
+            
+            self.players[guild_id] = Player(inter.guild, self.bot.loop, on_remove=remove_player)
+        
+        player = self.players[guild_id]
         await player.play_song(inter, song)
 
     @commands.slash_command()
@@ -212,7 +238,7 @@ class MusicCog(commands.Cog):
     @commands.slash_command()
     async def leave(self, inter):
         """Disconnect the bot from the voice channel."""
-        player = self.players.get(inter.guild.id)
+        player = self.players.pop(inter.guild.id, None)
         if player:
             await player.disconnect()
             await inter.response.send_message(content="Disconnected from the voice channel.")
