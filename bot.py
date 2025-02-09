@@ -63,7 +63,11 @@ class YTDLSource(disnake.PCMVolumeTransformer):
             return None
 
         if "entries" in data:
-            data = data["entries"][0]
+            try:
+                data = data["entries"][0]
+            except IndexError:
+                logging.error("Create source failed: No entries found.")
+                return None
 
         if not stream:
             filename = os.path.abspath(ytdl.prepare_filename(data))
