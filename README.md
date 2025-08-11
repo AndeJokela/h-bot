@@ -2,7 +2,7 @@
 A music player discord bot built with disnake.
 
 ### Requirements
-discord.py
+discord.py  
 yt-dlp (for fetching songs/videos)  
 PyNaCl (for discord.py voice support)  
 ffmpeg  
